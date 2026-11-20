@@ -1,0 +1,75 @@
+import yfinance as yf
+import pandas as pd
+import numpy as np
+import nltk
+from nltk.sentiment.vader import SentimentIntensityAnalyzer
+from transformers import pipeline
+import matplotlib.pyplot as plt
+
+nltk.download('vader_lexicon')
+
+maybank = yf.Ticker("1155.KL")
+cimb = yf.Ticker("1023.KL")
+start_date = "2023-01-01"
+end_date = "2023-11-01"
+maybank_data = maybank.history(start=start_date, end=end_date)
+cimb_data = cimb.history(start=start_date, end=end_date)
+
+news_data = {
+    "company": ["Maybank", "Maybank", "CIMB", "CIMB"],
+    "date": ["2023-10-20", "2023-11-01", "2023-10-15", "2023-11-02"],
+    "headline": [
+        "Maybank reports stronger-than-expected quarterly earnings growth",
+        "Maybank challenges in loan recovery amid economic uncertainty",
+        "CIMB announces upbeat earnings, driven by retail banking",
+        "CIMB faces headwinds from rising inflation and credit risk"
+    ]
+}
+news_df = pd.DataFrame(news_data)
+news_df['date'] = pd.to_datetime(news_df['date'])
+
+sid = SentimentIntensityAnalyzer()
+news_df['sentiment_scores'] = news_df['headline'].apply(lambda x: sid.polarity_scores(x))
+news_df['compound'] = news_df['sentiment_scores'].apply(lambda x: x['compound'])
+
+sentiment_model = pipeline("sentiment-analysis")
+def bert_sentiment(text):
+    result = sentiment_model(text)[0]
+    # Convert label to positive (=1) or negative (= -1)
+    return 1 if result['label'] == 'POSITIVE' else -1
+news_df['bert_sentiment'] = news_df['headline'].apply(bert_sentiment)
+
+maybank_data['Return'] = maybank_data['Close'].pct_change()
+cimb_data['Return'] = cimb_data['Close'].pct_change()
+
+# Remove timezone information from stock data to make them timezone-naive
+maybank_data.index = maybank_data.index.tz_localize(None)
+cimb_data.index = cimb_data.index.tz_localize(None)
+
+def get_return_around_date(stock_data, news_date, window=3):
+    # get returns from -window to +window days around news_date
+    start = news_date - pd.Timedelta(days=window)
+    end = news_date + pd.Timedelta(days=window)
+    return stock_data.loc[start:end]['Return'].mean()
+
+news_df['maybank_return'] = news_df.apply(lambda row: get_return_around_date(maybank_data, row['date']) if row['company'] == "Maybank" else np.nan, axis=1)
+news_df['cimb_return'] = news_df.apply(lambda row: get_return_around_date(cimb_data, row['date']) if row['company'] == "CIMB" else np.nan, axis=1)
+
+print(news_df)
+news_df.to_excel("news_sentiment.xlsx", index=False)
+
+# Plot sentiment and returns for each bank
+fig, axes = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
+for bank, ax in zip(['Maybank', 'CIMB'], axes):
+    subset = news_df[news_df['company'] == bank]
+    ax2 = ax.twinx()
+    ax.bar(subset['date'], subset['compound'], color='skyblue', alpha=0.7, label='Sentiment (Compound)')
+    ax2.plot(subset['date'], subset[f'{bank.lower()}_return'], color='red', marker='o', label='Market Return')
+    ax.set_ylabel('Sentiment Score')
+    ax2.set_ylabel('Average Return')
+    ax.set_title(f'Sentiment vs Market Reaction: {bank}')
+    ax.legend(loc='upper left')
+    ax2.legend(loc='upper right')
+plt.show()
+
+plt.savefig("graph.png")
